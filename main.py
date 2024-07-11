@@ -1,123 +1,156 @@
 from fastapi import FastAPI
 import pandas as pd
-from IPython.display import display, Markdown
+from sqlalchemy import create_engine, text
 from collections import defaultdict
 from fastapi.responses import HTMLResponse
 import markdown
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import HashingVectorizer
 
-
-
 app = FastAPI()
 
-# Cargar los DataFrames
-df = pd.read_csv('CleanData/movies_final.csv')
-df_c = pd.read_csv('CleanData/creditos_final.csv')
-df_highly_rated=pd.read_csv('DataML/movies_ml.csv')
+# Crear una conexión a la base de datos
+engine = create_engine('sqlite:///movies_database.db')
+df_highly_rated = pd.read_csv('DataML/movies_ml.csv')
 
 @app.get("/")
 def read_root():
     return {"message": "Bienvenido a mi proyecto MLOps/ Sebastian Quintero"}
 
-# 1. Cantidad de filmaciones por mes
 @app.get("/cantidad_filmaciones_mes/{mes}")
 def cantidad_filmaciones_mes(mes: str):
     meses = {
-        'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6, 
-        'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12
+        'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04', 'mayo': '05', 'junio': '06', 
+        'julio': '07', 'agosto': '08', 'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12'
     }
     
-    df['release_date'] = pd.to_datetime(df['release_date'])
-    peliculas_mes = df[df['release_date'].dt.month == meses[mes.lower()]]
-    cantidad = len(peliculas_mes)
+    query = text(f"""
+    SELECT COUNT(*) as cantidad
+    FROM movies_final
+    WHERE strftime('%m', release_date) = :mes
+    """)
+    
+    with engine.connect() as conn:
+        result = conn.execute(query, {"mes": meses[mes.lower()]}).fetchone()
+    
+    cantidad = result[0]
     
     return {"mensaje": f"Cantidad de películas estrenadas en el mes de {mes}: {cantidad}"}
 
-# 2. Cantidad de filmaciones por día
 @app.get("/cantidad_filmaciones_dia/{dia}")
 def cantidad_filmaciones_dia(dia: str):
     dias = {
-        'lunes': 'Monday', 'martes': 'Tuesday', 'miercoles': 'Wednesday', 
-        'jueves': 'Thursday', 'viernes': 'Friday', 'sabado': 'Saturday', 'domingo': 'Sunday'
+        'lunes': 'Monday', 'martes': 'Tuesday', 'miércoles': 'Wednesday', 
+        'jueves': 'Thursday', 'viernes': 'Friday', 'sábado': 'Saturday', 'domingo': 'Sunday'
     }
     
-    df['release_date'] = pd.to_datetime(df['release_date'])
-    peliculas_dia = df[df['release_date'].dt.day_name() == dias[dia.lower()]]
-    cantidad = len(peliculas_dia)
+    query = text(f"""
+    SELECT COUNT(*) as cantidad
+    FROM movies_final
+    WHERE strftime('%w', release_date) = :dia
+    """)
+    
+    dia_num = {'Monday': '1', 'Tuesday': '2', 'Wednesday': '3', 'Thursday': '4', 'Friday': '5', 'Saturday': '6', 'Sunday': '0'}[dias[dia.lower()]]
+    
+    with engine.connect() as conn:
+        result = conn.execute(query, {"dia": dia_num}).fetchone()
+    
+    cantidad = result[0]
     
     return {"mensaje": f"Cantidad de películas estrenadas en los días {dia}: {cantidad}"}
 
-# 3. Score de una filmación
 @app.get("/score_titulo/{titulo}")
 def score_titulo(titulo: str):
-    titulo_lower = titulo.lower()
-    pelicula = df[df['title'].str.lower() == titulo_lower]
+    query = text("""
+    SELECT title, release_date, popularity
+    FROM movies_final
+    WHERE LOWER(title) = LOWER(:titulo)
+    LIMIT 1
+    """)
     
-    if pelicula.empty:
+    with engine.connect() as conn:
+        result = conn.execute(query, {"titulo": titulo}).fetchone()
+    
+    if result is None:
         return {"mensaje": f"No se encontró la película '{titulo}'"}
     
-    pelicula = pelicula.iloc[0]
     return {
-        "mensaje": f"La película {pelicula['title']} fue estrenada en el año {pd.to_datetime(pelicula['release_date']).year} con un score/popularidad de {pelicula['popularity']}"
+        "mensaje": f"La película {result.title} fue estrenada en el año {result.release_date[:4]} con un score/popularidad de {result.popularity}"
     }
 
-# 4. Votos de un título
 @app.get("/votos_titulo/{titulo}")
 def votos_titulo(titulo: str):
-    titulo_lower = titulo.lower()
-    pelicula = df[df['title'].str.lower() == titulo_lower]
+    query = text("""
+    SELECT title, release_date, vote_count, vote_average
+    FROM movies_final
+    WHERE LOWER(title) = LOWER(:titulo)
+    LIMIT 1
+    """)
     
-    if pelicula.empty:
+    with engine.connect() as conn:
+        result = conn.execute(query, {"titulo": titulo}).fetchone()
+    
+    if result is None:
         return {"mensaje": f"No se encontró la película '{titulo}'"}
     
-    pelicula = pelicula.iloc[0]
-    if pelicula['vote_count'] >= 2000:
+    if result.vote_count >= 2000:
         return {
-            "mensaje": f"La película {pelicula['title']} fue estrenada en el año {pd.to_datetime(pelicula['release_date']).year}. La misma cuenta con un total de {pelicula['vote_count']} valoraciones, con un promedio de {pelicula['vote_average']}"
+            "mensaje": f"La película {result.title} fue estrenada en el año {result.release_date[:4]}. La misma cuenta con un total de {result.vote_count} valoraciones, con un promedio de {result.vote_average}"
         }
     else:
-        return {"mensaje": f"La película {pelicula['title']} no cumple con la condición de tener al menos 2000 valoraciones."}
+        return {"mensaje": f"La película {result.title} no cumple con la condición de tener al menos 2000 valoraciones."}
 
-# 5. Éxito de un actor
 @app.get("/get_actor/{nombre_actor}")
 def get_actor(nombre_actor: str):
-    mask = df_c['cast'].str.contains(nombre_actor, case=False, na=False)
-    peliculas_actor = df.loc[mask]
+    query = text("""
+    SELECT m.title, m.retorno
+    FROM movies_final m
+    JOIN creditos_final c ON m.id = c.id
+    WHERE c.cast LIKE :actor
+    """)
     
-    cantidad_peliculas = len(peliculas_actor)
-    retorno_total = peliculas_actor['return'].sum()
+    with engine.connect() as conn:
+        results = conn.execute(query, {"actor": f"%{nombre_actor}%"}).fetchall()
+    
+    cantidad_peliculas = len(results)
+    retorno_total = sum(r.retorno for r in results)
     retorno_promedio = retorno_total / cantidad_peliculas if cantidad_peliculas > 0 else 0
     
     return {
         "mensaje": f"El actor {nombre_actor} ha participado de {cantidad_peliculas} cantidad de filmaciones, el mismo ha conseguido un retorno de {retorno_total:.2f} con un promedio de {retorno_promedio:.2f} por filmación"
     }
 
-# 6. Éxito de un director
 @app.get("/get_director/{nombre_director}")
 def get_director_info(nombre_director: str):
-    mask = df_c['directors'].str.contains(nombre_director, case=False, na=False)
-    peliculas_director = df.loc[mask]
+    query = text("""
+    SELECT m.title, m.release_date, m.retorno, m.budget, m.revenue
+    FROM movies_final m
+    JOIN creditos_final c ON m.id = c.id
+    WHERE c.directors LIKE :director
+    """)
     
-    retorno_total = peliculas_director['return'].sum()
+    with engine.connect() as conn:
+        results = conn.execute(query, {"director": f"%{nombre_director}%"}).fetchall()
+    
+    retorno_total = sum(r.retorno for r in results)
     mensaje = f"El director {nombre_director} ha conseguido un retorno total de {retorno_total:.2f}. Películas:\n\n"
     
     peliculas_agrupadas = defaultdict(list)
-    for _, pelicula in peliculas_director.iterrows():
-        peliculas_agrupadas[pelicula['title']].append(pelicula)
+    for r in results:
+        peliculas_agrupadas[r.title].append(r)
     
     for titulo, peliculas in peliculas_agrupadas.items():
         pelicula = peliculas[0]
         mensaje += f"- **{titulo}**:\n"
-        mensaje += f"  * Fecha de lanzamiento: {pelicula['release_date']}\n"
-        mensaje += f"  * Retorno: {pelicula['return']:.2f}\n"
-        mensaje += f"  * Costo: {pelicula['budget']:.2f}\n"
-        mensaje += f"  * Ganancia: {pelicula['revenue'] - pelicula['budget']:.2f}\n"
+        mensaje += f"  * Fecha de lanzamiento: {pelicula.release_date}\n"
+        mensaje += f"  * Retorno: {pelicula.retorno:.2f}\n"
+        mensaje += f"  * Costo: {pelicula.budget:.2f}\n"
+        mensaje += f"  * Ganancia: {pelicula.revenue - pelicula.budget:.2f}\n"
         if len(peliculas) > 1:
             mensaje += f"  * Apariciones: {len(peliculas)}\n"
         mensaje += "\n"
     
-    return Markdown(mensaje)
+    return {"mensaje": mensaje}
 
 # Importamos las librerías para calcular la similitud del coseno y para vectorizar el texto de las características.
 from sklearn.metrics.pairwise import cosine_similarity
@@ -177,3 +210,4 @@ def recomendacion(titulo):
 
         # Devolvemos las 5 películas más similares
         return {'lista recomendada': df_highly_rated['title'].iloc[movie_indices].tolist()}
+
