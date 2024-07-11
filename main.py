@@ -14,7 +14,7 @@ app = FastAPI()
 # Cargar los DataFrames
 df = pd.read_csv('CleanData/movies_final.csv')
 df_c = pd.read_csv('CleanData/creditos_final.csv')
-df_highly_rated=pd.read_csv('CleanData/movies_ml.csv')
+df_highly_rated=pd.read_csv('DataML/movies_ml.csv')
 
 @app.get("/")
 def read_root():
